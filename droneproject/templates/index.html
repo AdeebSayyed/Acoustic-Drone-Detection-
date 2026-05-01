@@ -259,6 +259,11 @@
           <button class="btn btn-secondary" onclick="clearFile()" style="padding:6px 12px;font-size:11px">✕ Clear</button>
         </div>
 
+        <!-- Audio Player Preview -->
+        <div id="audioPlayerWrap" style="display:none; margin-top:12px;">
+          <audio id="audioPlayer" controls style="width:100%; height:36px; outline:none;"></audio>
+        </div>
+
         <!-- Waveform -->
         <div class="waveform-wrap" id="waveformWrap" style="display:none;margin-top:12px">
           <canvas class="waveform-canvas" id="waveCanvas" height="60"></canvas>
@@ -474,6 +479,12 @@ function handleFile(file) {
   document.getElementById('analyzeBtn').disabled = false;
   document.getElementById('analyzeNote').textContent = 'Ready to analyze';
   drawWaveform(file);
+  
+  const audioUrl = URL.createObjectURL(file);
+  const player = document.getElementById('audioPlayer');
+  player.src = audioUrl;
+  document.getElementById('audioPlayerWrap').style.display = 'block';
+
   log('info', '[FILE] Loaded: ' + file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)');
   resetPipeline();
 }
@@ -485,6 +496,12 @@ function clearFile() {
   document.getElementById('analyzeBtn').disabled = true;
   document.getElementById('analyzeNote').textContent = 'Select an audio file to begin';
   document.getElementById('waveformWrap').style.display = 'none';
+  
+  const player = document.getElementById('audioPlayer');
+  player.pause();
+  player.src = '';
+  document.getElementById('audioPlayerWrap').style.display = 'none';
+
   document.getElementById('resultPanel').classList.remove('show');
   resetPipeline();
 }

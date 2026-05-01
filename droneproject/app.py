@@ -207,11 +207,9 @@ def api_predict():
                 chunk = y_audio[start : start + window_samples]
                 chunks.append((start / sr_used, chunk))  # (timestamp, audio)
 
-            # If audio shorter than 3s, just use what we have (pad with zeros)
+            # If audio shorter than 3s, use it as is (do not pad, matches training)
             if len(chunks) == 0:
-                pad = np.zeros(window_samples)
-                pad[:len(y_audio)] = y_audio
-                chunks = [(0.0, pad)]
+                chunks = [(0.0, y_audio)]
 
             # Step 3 — features
             yield emit("step", {"id":3,"status":"active","label":"Extracting Audio Features",
