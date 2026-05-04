@@ -25,7 +25,7 @@ except ImportError:
     LIBROSA_OK = False
     print("CRITICAL: librosa NOT installed! Run: pip install librosa")
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 BASE       = os.path.dirname(os.path.abspath(__file__))
