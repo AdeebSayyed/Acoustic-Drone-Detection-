@@ -124,15 +124,14 @@ def generate_coordinates():
 
 @app.route("/")
 def index():
-    return send_from_directory("templates", "index.html")
+    return send_from_directory("frontend/dist", "index.html")
 
-@app.route("/<path:filename>.html")
-def pages(filename):
-    return send_from_directory("templates", filename + ".html")
-
-@app.route("/static/<path:path>")
-def static_files(path):
-    return send_from_directory("static", path)
+@app.route("/<path:path>")
+def catch_all(path):
+    try:
+        return send_from_directory("frontend/dist", path)
+    except Exception:
+        return send_from_directory("frontend/dist", "index.html")
 
 @app.route("/api/metrics")
 def api_metrics():
