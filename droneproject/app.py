@@ -11,6 +11,7 @@ import os, json, time, random, tempfile, traceback
 import numpy as np
 import joblib
 from flask import Flask, request, jsonify, send_from_directory, Response
+from flask_cors import CORS
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     confusion_matrix, accuracy_score,
@@ -26,6 +27,7 @@ except ImportError:
     print("CRITICAL: librosa NOT installed! Run: pip install librosa")
 
 app = Flask(__name__)
+CORS(app)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 BASE       = os.path.dirname(os.path.abspath(__file__))
@@ -137,6 +139,47 @@ def catch_all(path):
 def api_metrics():
     return jsonify({"status": "ok", "metrics": METRICS, "threshold_table": THRESHOLD_TABLE})
 
+
+@app.route("/api/stream_predict", methods=["POST"])
+def api_stream_predict():
+    if "audio" not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+
+    if not LIBROSA_OK:
+        return jsonify({"error": "librosa is not installed."}), 500
+
+    audio_file  = request.files["audio"]
+    audio_bytes = audio_file.read()
+
+    suffix = os.path.splitext(audio_file.filename)[1].lower() or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        y_audio, sr_used = librosa.load(tmp_path, sr=22050)
+    except Exception as load_err:
+        return jsonify({"error": str(load_err)}), 400
+    finally:
+        try: os.unlink(tmp_path)
+        except: pass
+
+    try:
+        feat = extract_features_from_audio(y_audio, sr_used)
+        if np.any(np.isnan(feat)) or np.any(np.isinf(feat)):
+            return jsonify({"error": "Feature extraction produced NaN/Inf"}), 400
+
+        conf = float(clf.predict_proba(feat.reshape(1, -1))[0][1])
+        is_drone = conf >= THRESHOLD
+        
+        return jsonify({
+            "is_drone": is_drone,
+            "confidence": round(conf * 100, 2),
+            "threshold": THRESHOLD * 100,
+            "label": "DRONE DETECTED" if is_drone else "SAFE"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/predict", methods=["POST"])
 def api_predict():

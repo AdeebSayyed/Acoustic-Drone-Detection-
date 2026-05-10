@@ -4,7 +4,7 @@ import {
     Upload, Play, Pause, Activity, Crosshair, BarChart2, Info,
     Shield, Cpu, Network, Zap, Target, Lock, Database, Server,
     CheckCircle2, AlertTriangle, FileAudio, MapPin, ChevronDown,
-    FileUp, Box, CarFront, BrainCircuit, Scale
+    FileUp, Box, CarFront, BrainCircuit, Scale, Mic, Radar
 } from 'lucide-react';
 
 // Shared drone screen position — DroneHero writes, ParticleBackground reads
@@ -2644,6 +2644,241 @@ const AboutPage = () => {
     );
 };
 
+const encodeWAV = (samples, sampleRate) => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    
+    const writeString = (view, offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+    
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true); 
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    
+    return new Blob([view], { type: 'audio/wav' });
+};
+
+const LiveMonitor = () => {
+    const [isRecording, setIsRecording] = useState(false);
+    const [droneDetected, setDroneDetected] = useState(false);
+    const [confidence, setConfidence] = useState(0);
+    const [error, setError] = useState(null);
+
+    const audioCtxRef = useRef(null);
+    const processorRef = useRef(null);
+    const streamRef = useRef(null);
+    const bufferRef = useRef(new Float32Array(0));
+    const intervalRef = useRef(null);
+    const sampleRateRef = useRef(44100);
+
+    const sendBuffer = async () => {
+        if (bufferRef.current.length === 0) return;
+        
+        const wavBlob = encodeWAV(bufferRef.current, sampleRateRef.current);
+        const formData = new FormData();
+        formData.append("audio", wavBlob, "live_audio.wav");
+
+        try {
+            const res = await fetch("http://localhost:5050/api/stream_predict", {
+                method: "POST",
+                body: formData
+            });
+            const data = await res.json();
+            
+            if (data.error) {
+                console.error("Prediction error:", data.error);
+                return;
+            }
+            
+            setDroneDetected(data.is_drone);
+            setConfidence(data.confidence);
+            
+        } catch (err) {
+            console.error("Failed to send audio chunk:", err);
+        }
+    };
+
+    const startRecording = async () => {
+        try {
+            setError(null);
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            streamRef.current = stream;
+            
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioContext();
+            audioCtxRef.current = audioCtx;
+            sampleRateRef.current = audioCtx.sampleRate;
+            
+            const source = audioCtx.createMediaStreamSource(stream);
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            processorRef.current = processor;
+            
+            processor.onaudioprocess = (e) => {
+                const input = e.inputBuffer.getChannelData(0);
+                const newBuffer = new Float32Array(bufferRef.current.length + input.length);
+                newBuffer.set(bufferRef.current);
+                newBuffer.set(input, bufferRef.current.length);
+                
+                const maxSamples = audioCtx.sampleRate * 3; 
+                if (newBuffer.length > maxSamples) {
+                    bufferRef.current = newBuffer.slice(newBuffer.length - maxSamples);
+                } else {
+                    bufferRef.current = newBuffer;
+                }
+            };
+            
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = 0; 
+            source.connect(processor);
+            processor.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            setIsRecording(true);
+            setDroneDetected(false);
+            setConfidence(0);
+            
+            intervalRef.current = setInterval(sendBuffer, 1000); 
+            
+        } catch (err) {
+            setError(err.message);
+        }
+    };
+
+    const stopRecording = () => {
+        setIsRecording(false);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        if (processorRef.current) processorRef.current.disconnect();
+        if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') audioCtxRef.current.close();
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+        }
+        setDroneDetected(false);
+        setConfidence(0);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (intervalRef.current) clearInterval(intervalRef.current);
+            if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+                audioCtxRef.current.close();
+            }
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
+            }
+        };
+    }, []);
+
+    return (
+        <div className="w-full min-h-[70vh] flex flex-col items-center justify-center p-8 bg-stone-900 rounded-[3rem] text-stone-100 relative overflow-hidden shadow-2xl border border-stone-800">
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
+                <div className={`w-[800px] h-[800px] border border-stone-600 rounded-full absolute ${isRecording ? 'animate-[spin_4s_linear_infinite]' : ''}`}>
+                    <div className="w-1/2 h-full bg-gradient-to-r from-transparent to-stone-500 rounded-r-full opacity-10"></div>
+                </div>
+                <div className="w-[600px] h-[600px] border border-stone-700 rounded-full absolute"></div>
+                <div className="w-[400px] h-[400px] border border-stone-700 rounded-full absolute"></div>
+                <div className="w-[200px] h-[200px] border border-stone-700 rounded-full absolute"></div>
+            </div>
+
+            <div className="z-10 flex flex-col items-center max-w-2xl text-center space-y-8">
+                <div>
+                    <h2 className="text-4xl font-light mb-4">Live Acoustic Monitor</h2>
+                    <p className="text-stone-400">
+                        Continuously analyzing the surrounding environment using a rolling 3-second overlapping window.
+                    </p>
+                </div>
+
+                <div className="relative w-64 h-64 flex items-center justify-center">
+                    <div className={`absolute inset-0 rounded-full transition-all duration-500 ${droneDetected ? 'bg-red-500/20 shadow-[0_0_50px_rgba(239,68,68,0.5)] border-red-500' : 'bg-stone-800 border-stone-700'} border-4`}></div>
+                    
+                    {droneDetected && (
+                        <div className="absolute inset-0 rounded-full animate-ping bg-red-500/30"></div>
+                    )}
+                    
+                    <div className="z-10 flex flex-col items-center justify-center">
+                        {droneDetected ? (
+                            <AlertTriangle className="w-16 h-16 text-red-500 mb-2 animate-pulse" />
+                        ) : (
+                            <Radar className={`w-16 h-16 ${isRecording ? 'text-emerald-400' : 'text-stone-600'}`} />
+                        )}
+                        <span className={`text-2xl font-bold ${droneDetected ? 'text-red-500' : 'text-stone-500'}`}>
+                            {droneDetected ? 'DRONE DETECTED' : (isRecording ? 'SCANNING' : 'STANDBY')}
+                        </span>
+                    </div>
+                </div>
+
+                <div className={`transition-all duration-300 w-full ${droneDetected ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none h-0 overflow-hidden'}`}>
+                    <div className="bg-red-950/50 border border-red-500/50 p-6 rounded-2xl flex items-center justify-between">
+                        <div className="text-left">
+                            <h3 className="text-red-400 font-bold text-lg flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5" /> THREAT DETECTED
+                            </h3>
+                            <p className="text-red-200/70 text-sm mt-1">Acoustic signature matches drone profile.</p>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-3xl font-mono text-red-400">{confidence}%</div>
+                            <div className="text-red-500/70 text-xs">CONFIDENCE</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="pt-8 flex flex-col items-center gap-4">
+                    {error && (
+                        <div className="text-red-400 text-sm bg-red-950/30 px-4 py-2 rounded-lg">
+                            {error}
+                        </div>
+                    )}
+                    
+                    <button
+                        onClick={isRecording ? stopRecording : startRecording}
+                        className={`group relative px-8 py-4 rounded-full font-bold tracking-wide transition-all duration-300 flex items-center gap-3 ${
+                            isRecording 
+                                ? 'bg-stone-800 text-stone-300 hover:bg-stone-700 border border-stone-600'
+                                : 'bg-stone-100 text-stone-900 hover:scale-105 hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]'
+                        }`}
+                    >
+                        {isRecording ? (
+                            <>
+                                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                                STOP MONITORING
+                            </>
+                        ) : (
+                            <>
+                                <Mic className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                                INITIATE LIVE SCAN
+                            </>
+                        )}
+                    </button>
+                    
+                    {!isRecording && (
+                        <span className="text-stone-500 text-sm flex items-center gap-2">
+                            <Lock className="w-4 h-4" /> Requires microphone permission
+                        </span>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 export default function App() {
     const detectionPanelRef = useRef(null);
     const metricsContainerRef = useRef(null);
@@ -2768,6 +3003,12 @@ export default function App() {
                     Detection
                 </button>
                 <button
+                    onClick={() => scrollToSection('live-monitoring')}
+                    className="px-5 py-2 rounded-full text-sm font-bold transition-all text-stone-600 hover:text-stone-900 hover:bg-stone-100 flex items-center gap-2 text-red-500 hover:text-red-600 hover:bg-red-50"
+                >
+                    <Radar className="w-4 h-4" /> Live
+                </button>
+                <button
                     onClick={() => scrollToSection('metrics')}
                     className="px-5 py-2 rounded-full text-sm font-bold transition-all text-stone-600 hover:text-stone-900 hover:bg-stone-100"
                 >
@@ -2825,6 +3066,13 @@ export default function App() {
                         </section>
 
                         <div className="w-full max-w-7xl mx-auto flex flex-col gap-32 px-6">
+                            <div className="w-full h-px bg-stone-300/50 mt-16" />
+
+                            <section id="live-monitoring" className="w-full relative pt-8">
+                                <PageNav positionClass="-top-4 -right-2 md:-top-8 md:-right-10 lg:-right-16" />
+                                <LiveMonitor />
+                            </section>
+
                             <div className="w-full h-px bg-stone-300/50" />
 
                             <section id="metrics" className="w-full relative">
